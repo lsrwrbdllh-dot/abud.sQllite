@@ -35,6 +35,9 @@ FinancialAccount {
 FinancialTransaction {
  int TransactionID PK
  int FinancialAccountID FK
+ string SourceType
+ int SourceID
+ string SourceEvent
  date TransactionDate
  string TransactionType
  decimal Amount
@@ -81,6 +84,7 @@ JournalEntry {
  string Status
  string SourceType
  int SourceID
+ string SourceEvent "unique with SourceType and SourceID"
 }
 JournalEntryDetail {
  int JournalEntryDetailID PK
@@ -117,3 +121,5 @@ AssetDisposal {
  decimal SaleProceeds
 }
 ```
+
+**ضوابط:** يجب توازن القيود قبل الترحيل، وأن تكون الفترة مفتوحة، وأن يكون لكل مستند معتمد أثر واحد دون تكرار. SourceType/SourceID مراجع منطقية؛ راجع [قواعد التنفيذ](../docs/implementation-rules.md).
