@@ -18,7 +18,16 @@ def nodes():
     text=adb('shell','cat','/sdcard/mobile-window.xml',check=False)
     if '<?xml' not in text:return []
     (OUT/'window.xml').write_text(text,encoding='utf-8')
-    return list(ET.fromstring(text[text.index('<?xml'):]).iter('node'))
+    result=list(ET.fromstring(text[text.index('<?xml'):]).iter('node'))
+    # Android 15's first-boot launcher can show an unrelated ANR over the app.
+    # Dismiss only that launcher dialog; never dismiss this app's errors/ANRs.
+    if any("Pixel Launcher isn't responding" in n.get('text','') for n in result):
+        close=next((n for n in result if n.get('resource-id')=='android:id/aerr_close'),None)
+        if close is not None:
+            tap_node(close)
+            print('Dismissed an unrelated first-boot Pixel Launcher ANR.')
+            return []
+    return result
 
 def find(label,timeout=25,scroll=False):
     until=time.monotonic()+timeout
@@ -34,14 +43,27 @@ def find(label,timeout=25,scroll=False):
         time.sleep(.5)
     raise AssertionError('Missing UI label: '+label)
 
-def tap(label,scroll=False):
-    node=find(label,scroll=scroll)
+def tap_node(node):
     x1,y1,x2,y2=map(int,re.findall(r'\d+',node.get('bounds')))
     adb('shell','input','tap',str((x1+x2)//2),str((y1+y2)//2))
+
+def tap(label,scroll=False):
+    tap_node(find(label,scroll=scroll))
+
+def tap_account(code):
+    until=time.monotonic()+20
+    while time.monotonic()<until:
+        for node in nodes():
+            if node.get('class')=='android.widget.TextView' and code in node.get('text',''):
+                tap_node(node)
+                return
+        time.sleep(.5)
+    raise AssertionError('Financial account not found: '+code)
 
 def enter(label,value):
     tap(label)
     adb('shell','input','keyevent','KEYCODE_MOVE_END')
+    adb('shell','input','keyevent','KEYCODE_DEL')
     adb('shell','input','text',value)
     adb('shell','input','keyevent','KEYCODE_BACK')
 
@@ -53,7 +75,7 @@ try:
     adb('shell','svc','wifi','disable')
     adb('shell','svc','data','disable')
     adb('shell','am','start','-W','-n',PACKAGE+'/com.abud.supermarket.MainActivity')
-    find('محاسبة على هاتفك')
+    find('محاسبة على هاتفك',timeout=60)
     enter('اسم المتجر','OfflineStore')
     enter('اسم العملة','UNIT')
     tap('إنشاء متجر جديد')
@@ -64,6 +86,19 @@ try:
     enter('الاسم *','OfflineCategory')
     tap('حفظ المسودة / البيانات',scroll=True)
     find('الاسم: OfflineCategory')
+    adb('shell','input','keyevent','KEYCODE_BACK')
+    tap('قيد يومية يدوي / تمويل رأس المال')
+    enter('وصف القيد','OpeningCapital')
+    for code,field in [('1500','مبلغ مدين'),('3000','مبلغ دائن')]:
+        tap('إضافة سطر')
+        enter('بحث عن سجل مرتبط',code)
+        tap_account(code)
+        enter(field,'100')
+        tap('إضافة')
+    tap('اعتماد القيد المتوازن',scroll=True)
+    tap('متابعة')
+    find('الوصف: OpeningCapital')
+    find('الحالة: معتمد')
     adb('shell','am','force-stop',PACKAGE)
     adb('shell','am','start','-W','-n',PACKAGE+'/com.abud.supermarket.MainActivity')
     find('تعمل محلياً • العملة: UNIT')
@@ -76,7 +111,7 @@ try:
         time.sleep(.5)
     assert found,'Created category was lost after process restart.'
     assert adb('shell','pidof',PACKAGE),'App exited.'
-    print('PASS: packaged APK opened offline, initialized SQLite, saved a field and retained data after force-stop.')
+    print('PASS: packaged APK opened offline, initialized SQLite, saved a category, posted a balanced capital journal and retained data after force-stop.')
 finally:
     (OUT/'logcat.txt').write_text(adb('logcat','-d',check=False),encoding='utf-8')
     with (OUT/'screen.png').open('wb') as image:

@@ -227,7 +227,7 @@ public final class MainActivity extends Activity {
         text("الحفظ ينشئ مسودة. افتح تفاصيل المستند لإضافة الأسطر واعتماده. الحقول المحسوبة يحتسبها البرنامج.");
     }
     private void chooseForeign(String table,boolean nullable,Reply result)throws Exception {
-        LinearLayout panel=new LinearLayout(this);panel.setOrientation(1);EditText query=new EditText(this);query.setHint("بحث بالاسم أو الرقم");panel.addView(query);
+        LinearLayout panel=new LinearLayout(this);panel.setOrientation(1);EditText query=new EditText(this);query.setHint("بحث بالاسم أو الرقم");query.setContentDescription("بحث عن سجل مرتبط");panel.addView(query);
         ListView list=new ListView(this);panel.addView(list,new LinearLayout.LayoutParams(-1,600));
         LinearLayout paging=new LinearLayout(this);Button previous=new Button(this),next=new Button(this);previous.setText("السابق");next.setText("التالي");paging.addView(previous);paging.addView(next);panel.addView(paging);
         AlertDialog.Builder builder=new AlertDialog.Builder(this).setTitle("اختيار — "+label(table)).setView(panel).setNegativeButton("إلغاء",null);
@@ -250,6 +250,7 @@ public final class MainActivity extends Activity {
         List<JSONObject> lines=new ArrayList<>();LinearLayout rows=new LinearLayout(this);rows.setOrientation(1);body.addView(rows);
         button("إضافة سطر",()->chooseForeign("ChartOfAccounts",false,account->{
             LinearLayout panel=new LinearLayout(this);panel.setOrientation(1);EditText debit=new EditText(this),credit=new EditText(this);debit.setHint("مدين");credit.setHint("دائن");debit.setText("0");credit.setText("0");
+            debit.setContentDescription("مبلغ مدين");credit.setContentDescription("مبلغ دائن");
             debit.setInputType(InputType.TYPE_CLASS_NUMBER|InputType.TYPE_NUMBER_FLAG_DECIMAL);credit.setInputType(InputType.TYPE_CLASS_NUMBER|InputType.TYPE_NUMBER_FLAG_DECIMAL);panel.addView(debit);panel.addView(credit);
             new AlertDialog.Builder(this).setTitle("الحساب #"+account).setView(panel).setNegativeButton("إلغاء",null).setPositiveButton("إضافة",(d,w)->act(()->{
                 JSONObject line=obj("account",account,"debit",debit.getText().toString(),"credit",credit.getText().toString());lines.add(line);
