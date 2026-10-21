@@ -12,6 +12,9 @@ PayrollDetail ||--o{ SalaryPayment : paid_by
 SalesInvoice ||--o{ Delivery : delivered_in
 Employee ||--o{ Delivery : assigned
 Delivery ||--o{ DeliveryExpense : costs
+FinancialAccount o|--o{ Expense : paid_from
+FinancialAccount o|--o{ SalaryPayment : paid_from
+FinancialAccount o|--o{ DeliveryExpense : paid_from
 ExpenseCategory {
  int ExpenseCategoryID PK
  string CategoryName
@@ -20,6 +23,7 @@ Expense {
  int ExpenseID PK
  int BranchID FK
  int ExpenseCategoryID FK
+ int FinancialAccountID FK "optional until payment"
  date ExpenseDate
  decimal Amount
  string Description
@@ -51,6 +55,7 @@ PayrollDetail {
 SalaryPayment {
  int SalaryPaymentID PK
  int PayrollDetailID FK
+ int FinancialAccountID FK "when paid"
  date PaymentDate
  decimal Amount
  string PaymentMethod
@@ -68,9 +73,12 @@ Delivery {
 DeliveryExpense {
  int DeliveryExpenseID PK
  int DeliveryID FK
+ int FinancialAccountID FK "optional until payment"
  string ExpenseType
  decimal Amount
  date ExpenseDate
  string Notes
 }
 ```
+
+**ضوابط:** الدفع لا يساوي الاستحقاق، ويمنع تكرار قيد المصروف أو الراتب عند تسجيل الدفع. راجع [قواعد التنفيذ](../docs/implementation-rules.md).
