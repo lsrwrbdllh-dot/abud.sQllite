@@ -92,7 +92,7 @@ public final class MainActivity extends Activity {
         TextView view=new TextView(this);view.setText(value);view.setTextSize(17);view.setTextColor(ink);view.setPadding(4,10,4,10);body.addView(view);return view;
     }
     private Button button(String name,Job job) {
-        Button b=new Button(this);b.setText(name);b.setTextSize(16);b.setTextColor(Color.WHITE);b.setBackgroundTintList(android.content.res.ColorStateList.valueOf(teal));
+        Button b=new Button(this);b.setText(name);b.setAllCaps(false);b.setTextSize(16);b.setTextColor(Color.WHITE);b.setBackgroundTintList(android.content.res.ColorStateList.valueOf(teal));
         b.setOnClickListener(v->act(()->{if(pending)throw new Exception("انتظر اكتمال العملية الحالية.");job.run();}));body.addView(b);return b;
     }
     private EditText input(String label,String value,int type) {
