@@ -3,6 +3,7 @@
 ```mermaid
 erDiagram
 Product ||--o{ InventoryBatch : has
+GoodsReceiptDetail ||--o{ InventoryBatch : creates
 Product ||--o{ InventoryBalance : balance
 Warehouse ||--o{ InventoryBalance : balance
 InventoryBatch ||--o{ BatchStock : located
@@ -26,6 +27,7 @@ InventoryCountDetail ||--o{ InventoryAdjustmentDetail : corrected
 InventoryBatch {
  int BatchID PK
  int ProductID FK
+ int GoodsReceiptDetailID FK
  string ManufacturerLot
  date ProductionDate
  date ExpiryDate
@@ -104,3 +106,5 @@ InventoryAdjustmentDetail {
  decimal QuantityDifference
 }
 ```
+
+**ضوابط:** رقم تشغيلة المصنع ليس فريدًا عبر كل الاستلامات. SourceType/SourceDetailID مرجع منطقي لا يفرض سلامة FK وحده؛ راجع [قواعد التنفيذ](../docs/implementation-rules.md).
