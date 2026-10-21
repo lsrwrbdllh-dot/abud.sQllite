@@ -51,5 +51,8 @@ FreightAllocation {
  int FreightID FK
  int PurchaseInvoiceDetailID FK
  decimal AllocatedAmount
+ string AllocationBasis "value_quantity_weight_manual"
 }
 ```
+
+**ضوابط:** في معالجة INVENTORY يجب أن يساوي مجموع التوزيع تكلفة الشحن، وأن تكون الأسطر ضمن فاتورة الشحن نفسها. في EXPENSE لا توجد أسطر توزيع. راجع [قواعد التنفيذ](../docs/implementation-rules.md).
