@@ -7,6 +7,8 @@ Customer o|--o{ SalesInvoice : buys
 SalesInvoice ||--|{ SalesInvoiceDetail : lines
 Product ||--o{ SalesInvoiceDetail : sold
 Customer ||--o{ CustomerReceipt : pays
+FinancialAccount o|--o{ CustomerReceipt : deposited_to
+FinancialAccount o|--o{ SupplierPayment : paid_from
 CustomerReceipt ||--o{ ReceiptAllocation : allocated
 SalesInvoice ||--o{ ReceiptAllocation : settled
 SalesInvoice ||--o{ SalesReturn : returned
@@ -40,6 +42,7 @@ SalesInvoiceDetail {
 CustomerReceipt {
  int ReceiptID PK
  int CustomerID FK
+ int FinancialAccountID FK "required when settled"
  date ReceiptDate
  decimal Amount
  string PaymentMethod
@@ -77,6 +80,7 @@ PurchaseReturnDetail {
 SupplierPayment {
  int SupplierPaymentID PK
  int SupplierID FK
+ int FinancialAccountID FK "required when settled"
  date PaymentDate
  decimal Amount
  string PaymentMethod
@@ -88,3 +92,5 @@ SupplierPaymentAllocation {
  decimal AllocatedAmount
 }
 ```
+
+**ضوابط:** لا تتجاوز كميات المرتجعات الكميات الأصلية المتاحة؛ ولا تتجاوز التوزيعات مبلغ القبض أو السداد. راجع [قواعد التنفيذ](../docs/implementation-rules.md).
