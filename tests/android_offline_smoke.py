@@ -23,7 +23,11 @@ def nodes():
 def find(label,timeout=25,scroll=False):
     until=time.monotonic()+timeout
     while time.monotonic()<until:
-        for node in nodes():
+        candidates=nodes()
+        # A field's visible label and EditText share the accessible name.
+        # Prefer the input, then buttons, so tapping never targets its label.
+        candidates.sort(key=lambda n: (0 if n.get('class','').endswith('EditText') else 1 if n.get('clickable')=='true' else 2))
+        for node in candidates:
             if label in (node.get('text'),node.get('content-desc')):
                 if node.get('bounds') not in (None,'[0,0][0,0]'):return node
         if scroll:adb('shell','input','swipe','500','1750','500','450','300')
