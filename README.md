@@ -2,6 +2,16 @@
 
 مخططات ER لنظام محاسبي ومخزني للسوبر ماركت. هذه وثائق تصميم أولية لقاعدة بيانات SQLite، مع مراعاة إمكانية الانتقال لاحقًا إلى SQL Server.
 
+## تنفيذ SQLite
+
+أضيف تنفيذ قابل للتشغيل مع 68 جدولًا و35 اختبارًا وبيانات افتراضية. راجع [تعليمات التشغيل في Codespaces والجوال](database/README.md)، و[تقرير مراجعة التصميم والقرارات](docs/design-review.md)، و[خطة الانتقال إلى SQL Server](docs/sql-server-migration.md). تبقى المخططات أدناه مرجع التصميم الأصلي.
+
+```bash
+python -m unittest discover -s tests -v
+python -m database.engine supermarket.sqlite --seed
+python -m database.demo supermarket-demo.sqlite
+```
+
 ## المخططات
 1. [الفروع والمنتجات والموردون](diagrams/01-branches-products-suppliers.md)
 2. [المشتريات والاستلام والشحن](diagrams/02-purchases-receiving-shipping.md)
