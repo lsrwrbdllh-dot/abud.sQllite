@@ -6,7 +6,7 @@
 
 أضيف تسجيل دخول المدير والموظفين والأدوار الخمسة والصلاحيات المخصصة ونطاق الصندوق وتدقيق المنفذ. [دليل الصلاحيات](../docs/employee-permissions.md)، [سجل كل تعديل وسببه وموقعه](../docs/employee-permissions-changes.md).
 
-نجحت 78 حالة محلياً. بناء APK الجديد واختبار المحاكي [قيد المتابعة](https://github.com/lsrwrbdllh-dot/abud.sQllite/actions/runs/40411838031). رابط APK للإصدار 1.0.0 في سجل البناء هو نسخة سابقة لا تتضمن الصلاحيات؛ لا تثبتها للحصول على هذه الميزة.
+نجحت **78 حالة اختبار محلياً وعلى GitHub** وبناء APK واختبار المحاكي دون إنترنت، مع دخول المدير والكاشير وحفظ البيانات بعد إعادة العملية. [تنزيل APK 1.1.0](https://github.com/lsrwrbdllh-dot/abud.sQllite/actions/runs/40411838031/artifacts/12693284004)، [نتيجة التحقق](https://github.com/lsrwrbdllh-dot/abud.sQllite/actions/runs/40411838031). سجل دخولك إلى GitHub ثم فك ZIP وثبت `app-debug.apk`. [البصمات ونطاق الاختبار](../docs/mobile-build-status.md).
 
 ## نطاق الواجهات
 
