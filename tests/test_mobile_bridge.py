@@ -20,13 +20,19 @@ class MobileBridgeTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.path=Path(self.temp.name)/'store.sqlite'
         db=Database(self.path);db.migrate();db.seed();db.close()
+        self.token=None
+        self.call('bootstrap',username='test-admin',password='test-password')
 
     def call(self, action, **request):
+        if self.token: request['_session']=self.token
         response=json.loads(invoke(str(self.path),action,json.dumps(request,ensure_ascii=False)))
         self.assertTrue(response['ok'],response.get('error'))
+        if action in {'initialize','bootstrap','login'}: self.token=response['data']['token']
+        if action=='restore': self.call('login',username='test-admin',password='test-password')
         return response['data']
 
     def rejected(self, action, **request):
+        if self.token: request['_session']=self.token
         conn=sqlite3.connect(self.path)
         before='\n'.join(conn.iterdump());conn.close()
         response=json.loads(invoke(str(self.path),action,json.dumps(request)))
@@ -58,7 +64,7 @@ class MobileBridgeTests(unittest.TestCase):
     def test_new_store_has_current_year_no_fictional_products_or_postings(self):
         self.path.unlink()
         self.assertFalse(self.call('status')['exists'])
-        self.call('initialize',branch='متجر عبد الله',currency='ريال')
+        self.call('initialize',branch='متجر عبد الله',currency='ريال',username='test-admin',password='test-password')
         self.assertTrue(self.call('status')['exists'])
         self.assertEqual(self.call('schema')['currency'],'ريال')
         for table in ('Product','Supplier','Customer','PostingEvent','FinancialTransaction'):
@@ -212,14 +218,13 @@ class MobileBridgeTests(unittest.TestCase):
         second=self.call('rows',table='Category',search='فئة',offset=50)
         self.assertEqual((first['total'],len(first['rows']),len(second['rows'])),(55,50,5))
         self.assertFalse({r['CategoryID'] for r in first['rows']} & {r['CategoryID'] for r in second['rows']})
-        role=self.add('Role',RoleName='manager')
-        result=self.call('save',table='RolePermission',values={'RoleID':str(role),'PermissionID':'1'})
-        self.assertEqual(result['key'],{'RoleID':role,'PermissionID':1})
-        self.assertEqual(self.call('rows',table='RolePermission',filters={'RoleID':role})['total'],1)
-        self.call('delete',table='RolePermission',key=result['key'])
+        self.rejected('save',table='RolePermission',values={'RoleID':'1','PermissionID':'1'})
+        result=self.call('users')
+        self.assertIn('manager',result['roles'])
+        self.assertEqual(len(result['users']),1)
 
     def test_password_hashed_redacted_and_changes_audited_without_secret(self):
-        user=self.add('AppUser',EmployeeID='1',Username='owner',PasswordHash='my-secret-pass')
+        user=self.call('user_save',name='المالك',username='owner',password='my-secret-pass',role='manager')['id']
         row=self.call('record',table='AppUser',key={'UserID':user})
         self.assertEqual(row['PasswordHash'],'••••••••')
         conn=sqlite3.connect(self.path)

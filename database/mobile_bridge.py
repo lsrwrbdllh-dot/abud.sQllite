@@ -13,9 +13,10 @@ import threading
 from .build_schema import TABLES, SOURCES
 from .engine import Database, EFFECT_TABLES, RuleError, require, money, quantity
 from .mobile_metadata import TABLE_LABELS, GROUPS, MONEY, QUANTITIES, AUTO, ENUM_LABELS, field_label
+from . import mobile_security as security
 
 LOCK = threading.RLock()
-READ_ONLY = EFFECT_TABLES | {'ManualJournal'}
+READ_ONLY = EFFECT_TABLES | {'ManualJournal'} | security.SECURITY_TABLES
 DOCUMENTS = set(SOURCES) | {'InventoryCount'}
 
 def _columns(db, table):
@@ -34,7 +35,13 @@ def _where(db, table, values, primary=False):
 
 def _rows(db, table, filters=None, search='', offset=0, limit=50):
     where, args = _where(db, table, filters or {})
-    fields = _columns(db, table)
+    user = db.security_user
+    allowed = security.columns(user, table, [c['name'] for c in _columns(db, table)])
+    require(set(filters or {}) <= set(allowed), 'لا يسمح بالبحث في حقول محجوبة.')
+    scope, scope_args = security.scope(db, user, table)
+    where += ' AND (' + scope + ')'
+    args += scope_args
+    fields = [c for c in _columns(db, table) if c['name'] in allowed]
     if search:
         searchable = [c['name'] for c in fields if c['name'] != 'PasswordHash']
         where += ' AND (' + ' OR '.join(f'CAST("{c}" AS TEXT) LIKE ?' for c in searchable) + ')'
@@ -45,14 +52,18 @@ def _rows(db, table, filters=None, search='', offset=0, limit=50):
     for row in rows:
         if 'PasswordHash' in row:
             row['PasswordHash'] = '••••••••'
-    return {'rows': rows, 'total': total, 'offset': offset}
+    return {'rows': [security.visible(user, table, row) for row in rows], 'total': total, 'offset': offset}
 
 def schema(db):
     tables = []
+    user = db.security_user
     for name in TABLES:
+        try: security.table_check(user, name)
+        except RuleError: continue
         foreign = {r['from']: r['table'] for r in db.rows(f'PRAGMA foreign_key_list("{name}")')}
         columns = _columns(db, name)
         single_key = len(_keys(db, name)) == 1
+        columns = [c for c in columns if c['name'] in security.columns(user, name, [x['name'] for x in columns])]
         for c in columns:
             key = c['name']
             c['foreign'] = foreign.get(key)
@@ -65,13 +76,22 @@ def schema(db):
             c['boolean'] = 'INTEGER' == c['type'] and bool(re.search(r'\b'+re.escape(key)+r'\s+IN\s*\(0,1\)',TABLES[name]))
         children = []
         for child in TABLES:
+            try: security.table_check(user, child)
+            except RuleError: continue
             for fk in db.rows(f'PRAGMA foreign_key_list("{child}")'):
                 if fk['table'] == name:
                     children.append({'table':child,'field':fk['from'],'target':fk['to'] or _keys(db,name)[0]})
-        tables.append({'name':name,'label':TABLE_LABELS[name], 'columns':columns,
-                       'editable': name not in READ_ONLY, 'postable':name in SOURCES and name != 'ManualJournal',
-                       'freezable':name=='InventoryCount','children':children})
-    return {'tables':tables,'groups':{k:v.split() for k,v in GROUPS.items()},'choices':ENUM_LABELS,
+        rights = {action: security.has(user, f'{name}.{action}') for action in security.ACTIONS}
+        tables.append({'name':name,'label':TABLE_LABELS[name], 'columns':columns, 'rights':rights,
+                       'editable': name not in READ_ONLY and (rights['create'] or rights['update']),
+                       'postable':name in SOURCES and name != 'ManualJournal' and rights['post'] and
+                           (name not in {'SalesReturn','PurchaseReturn'} or security.has(user,'returns.approve')) and
+                           (name!='InventoryAdjustment' or security.has(user,'stock.adjust')),
+                       'freezable':name=='InventoryCount' and rights['post'],'children':children})
+    allowed_tables = {t['name'] for t in tables}
+    return {'tables':tables,'groups':{k:[t for t in v.split() if t in allowed_tables] for k,v in GROUPS.items() if any(t in allowed_tables for t in v.split())},'choices':ENUM_LABELS,
+            'user':{'id':user['id'],'username':user['username'],'manager':user['manager'],
+                    'permissions':sorted(security.catalog() if user['manager'] else user['permissions'])},
             'currency':db.scalar('SELECT CurrencyName FROM SystemSetting WHERE SettingID=1')}
 
 def _parse(db, table, values, updating=False):
@@ -125,10 +145,7 @@ def _computed(db, table, values, old=None):
         values['CreatedAt']=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 
 def _audit(db, table, ident, action, old, new):
-    def clean(v):
-        return json.dumps({k:('***' if k=='PasswordHash' else x) for k,x in (v or {}).items()},ensure_ascii=False)
-    db._insert('AuditLog',ActionType=action,EntityName=table,AffectedRecordID=ident,
-               OldValues=clean(old),NewValues=clean(new),ActionAt=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))
+    security.audit(db, action, table, ident, old, new)
 
 def save(db, request):
     table=request['table']
@@ -149,6 +166,7 @@ def save(db, request):
             ident=next(iter(key.values()))
         else:
             ident=db.add(table,**values)
+            security.ownership(db, db.security_user, table, ident)
         _audit(db,table,int(ident),'UPDATE' if key else 'CREATE',old,values)
         if key:
             return {'key':key}
@@ -191,7 +209,7 @@ def initialize(path, request):
 def _signature(db):
     return {(r['type'],r['name']):r['sql'] for r in db.rows("SELECT type,name,sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%'")}
 
-def restore(path, source):
+def restore(path, source, requester=None):
     require(source.is_file() and source.stat().st_size<=100*1024*1024,'ملف القاعدة غير موجود أو يتجاوز 100 ميغابايت.')
     with source.open('rb') as stream:
         require(stream.read(16)==b'SQLite format 3\x00','اختر ملف SQLite صحيحاً.')
@@ -202,7 +220,9 @@ def restore(path, source):
     target=None
     try:
         expected.migrate()
-        require(_signature(candidate)==_signature(expected),'مخطط الملف لا يطابق قاعدة abud.sQllite المعتمدة.')
+        original_signature = _signature(expected)
+        security.ensure(expected)
+        require(_signature(candidate) in (original_signature,_signature(expected)),'مخطط الملف لا يطابق قاعدة abud.sQllite المعتمدة.')
         require(candidate.scalar('SELECT max(Version) FROM SchemaMigration')==1,'إصدار قاعدة غير مدعوم.')
         require(candidate.scalar('SELECT count(*) FROM SystemSetting WHERE SettingID=1 AND MoneyScale=100 AND QuantityScale=1000')==1,'إعداد العملة غير مكتمل.')
         candidate.check()
@@ -215,7 +235,10 @@ def restore(path, source):
         current=Database(path)
         backup_path=path.parent/'before-restore.sqlite'
         dest=sqlite3.connect(backup_path)
-        try: current.conn.backup(dest)
+        try:
+            if requester:
+                security.audit(current,'RESTORE','MobileSecurity',1,new={'RequestedBy':requester['username']},user=requester['id'])
+            current.conn.backup(dest)
         finally: dest.close();current.close()
     os.replace(staged,path)
     return {'message':'تم استيراد القاعدة والتحقق من سلامتها. حفظت نسخة من القاعدة السابقة على الهاتف.'}
@@ -274,30 +297,125 @@ def report(db, kind, start, end):
         raise RuleError('تقرير غير معروف.')
     return {'rows':rows,'scales':{key:100 for row in rows for key,value in row.items() if isinstance(value,int)}}
 
+def _authorize(db, user, action, r):
+    """Every external command passes this check, including direct JSON calls."""
+    if action in {'rows','record','export_rows','print_record','save','delete','post'}:
+        table = r['table']
+        operation = {'rows':'view','record':'view','export_rows':'export','print_record':'print',
+                     'save':'update' if r.get('key') else 'create','delete':'delete','post':'post'}[action]
+        security.table_check(user, table, operation)
+        if operation in {'print','export'}:
+            security.table_check(user, table, 'view')
+        if action in {'save','delete'}:
+            require(table not in READ_ONLY, 'السجل محمي؛ إدارة المستخدمين من شاشة الصلاحيات فقط.')
+        if action == 'save':
+            values = r['values']
+            require(isinstance(values,dict), 'حقول غير صحيحة.')
+            require(set(values) <= set(security.columns(user,table,values)), 'لا يسمح بتعديل حقول التكلفة المحجوبة.')
+            old = security.accessible(db,user,table,r['key']) if r.get('key') else {}
+            security.references(db,user,table,old | values)
+            if table == 'SalesInvoiceDetail' and old and 'UnitPrice' in values:
+                parsed = _parse(db,table,values,True)
+                if parsed['UnitPrice'] != old['UnitPrice']:
+                    security.check(user,'prices.change')
+            if table in {'FinancialYear','AccountingPeriod'} and 'Status' in values:
+                security.check(user,'period.close')
+        elif action in {'record','print_record','delete'}:
+            security.accessible(db,user,table,r['key'])
+        elif action == 'post':
+            doc = security.accessible(db,user,table,{_keys(db,table)[0]:r['id']})
+            security.references(db,user,table,doc)
+            if table in {'SalesReturn','PurchaseReturn'}:
+                security.check(user,'returns.approve')
+            if table == 'InventoryAdjustment':
+                security.check(user,'stock.adjust')
+    elif action == 'freeze':
+        security.table_check(user,'InventoryCount','post')
+        security.accessible(db,user,'InventoryCount',{'InventoryCountID':r['id']})
+    elif action in {'manual','reverse'}:
+        security.check(user,'journal.manual' if action=='manual' else 'journal.reverse')
+        security.check(user,'cash.all')
+        if action=='reverse':
+            security.accessible(db,user,'JournalEntry',{'JournalEntryID':r['id']})
+    elif action == 'report':
+        kind = r['kind'];mode = r.get('mode','view')
+        require(kind in security.REPORTS and mode in {'view','print','export'},'تقرير أو إجراء غير صحيح.')
+        security.check(user,f'report.{kind}.view')
+        security.check(user,f'report.{kind}.{mode}')
+        if kind not in {'stock','transit'}:
+            security.check(user,'data.all')
+        if kind in {'income','trial'}:
+            security.check(user,'costs.view');security.check(user,'profits.view')
+        if kind=='financial': security.check(user,'cash.all')
+    elif action in {'backup','backup_previous','restore','check'}:
+        security.check(user,{'backup':'backup.create','backup_previous':'backup.create','restore':'backup.restore','check':'database.check'}[action])
+    elif action in {'users','user_save'}:
+        security.check(user,'users.manage')
+    elif action not in {'schema','logout','password'}:
+        raise RuleError('أمر غير معروف.')
+
+
 def _dispatch(path, action, r):
-    if action=='status':
-        return {'exists':path.exists(),'message':'البيانات تحفظ محلياً وتعمل دون إنترنت.'}
-    if action=='initialize': return initialize(path,r)
-    if action=='restore': return restore(path,path.parent/'import.sqlite')
+    require(isinstance(r,dict),'طلب غير صحيح.')
+    if action=='initialize':
+        security.password_hash(r.get('password'))
+        require(2<=len(str(r.get('username','')).strip())<=60,'أدخل اسم مستخدم للمدير.')
+        initialize(path,r)
+    if action=='restore' and not path.exists():
+        return restore(path,path.parent/'import.sqlite')
+    if action=='status' and not path.exists():
+        return {'exists':False,'configured':False}
     require(path.exists(),'أنشئ قاعدة المتجر أو استورد ملف SQLite أولاً.')
     db=Database(path)
     try:
+        security.ensure(db)
+        if action=='status': return {'exists':True,'configured':security.configured(db)}
+        if action in {'initialize','bootstrap'}: return security.bootstrap(db,r)
+        if action=='login': return security.login(db,r)
+        user=security.actor(db,r.get('_session'))
+        db.security_user=user
+        _authorize(db,user,action,r)
+        if action=='logout':
+            security.audit(db,'LOGOUT','AppUser',user['id'])
+            security.SESSIONS.pop(r['_session'],None)
+            return {'message':'تم تسجيل الخروج.'}
+        if action=='password': return security.change_password(db,user,r)
+        if action=='users': return security.user_catalog(db,user)
+        if action=='user_save': return security.user_save(db,user,r)
+        if action=='restore':
+            result=restore(path,path.parent/'import.sqlite',user)
+            security.invalidate(db)
+            return result
         if action=='schema': return schema(db)
         if action=='rows': return _rows(db,r['table'],r.get('filters'),r.get('search',''),r.get('offset',0))
-        if action=='record':
+        if action=='export_rows':
+            result=_rows(db,r['table'],r.get('filters'),r.get('search',''),0,10000)
+            require(result['total']<=10000,'حد التصدير 10000 سجل؛ ضيّق البحث أولاً.')
+            result['scales']={c['name']:100 if c['name'] in MONEY else 1000 for c in _columns(db,r['table']) if c['name'] in MONEY|QUANTITIES}
+            security.audit(db,'EXPORT',''+r['table'],0,new={'Rows':len(result['rows'])})
+            return result
+        if action in {'record','print_record'}:
             where,args=_where(db,r['table'],r['key'],primary=True)
             row=db.conn.execute(f'SELECT * FROM "{r["table"]}" WHERE {where}',args).fetchone()
             require(row is not None,'السجل غير موجود.')
             value=dict(row)
             if 'PasswordHash' in value: value['PasswordHash']='••••••••'
-            if r['table'] in ('SalesInvoice','PurchaseInvoice'):
+            if r['table']=='SalesInvoice' or (r['table']=='PurchaseInvoice' and security.has(user,'costs.view')):
                 kind='Sales' if r['table']=='SalesInvoice' else 'Purchase'
                 ident=value[kind+'InvoiceID']
                 total=db.invoice_total(kind,ident)
                 paid=total if value.get('SaleType')=='CASH' else db.allocated(kind,ident)
                 value['_summary']={'إجمالي الفاتورة بعد المرتجعات والشحن أو التوصيل':format(Decimal(total)/100,'.2f'),
                                    'المسدد أو المخصص':format(Decimal(paid)/100,'.2f'),'المتبقي':format(Decimal(total-paid)/100,'.2f')}
-            return value
+            if action=='print_record':
+                lines=[]
+                for child,(parent,field) in security.CHILDREN.items():
+                    if parent!=r['table'] or not security.has(user,child+'.view'): continue
+                    rows=_rows(db,child,{field:next(iter(r['key'].values()))},limit=10000)['rows']
+                    lines.append({'table':child,'rows':rows})
+                value['_lines']=lines
+                security.audit(db,'PRINT',r['table'],int(next(iter(r['key'].values()))))
+            return security.visible(user,r['table'],value)
         if action=='save': return save(db,r)
         if action=='delete':
             table=r['table'];require(table not in READ_ONLY,'السجل محمي.')
@@ -315,18 +433,44 @@ def _dispatch(path, action, r):
             event=db.post(table,ident)
             return {'message':'تم اعتماد المستند وترحيل آثاره.','event':event}
         if action=='freeze':
-            db.freeze_count(int(r['id']));return {'message':'تم تثبيت لقطة الجرد.'}
+            with db.transaction():
+                db.freeze_count(int(r['id']))
+                security.audit(db,'FREEZE','InventoryCount',int(r['id']))
+            return {'message':'تم تثبيت لقطة الجرد.'}
         if action=='manual':
             lines=[(int(x['account']),money(x.get('debit','0')),money(x.get('credit','0'))) for x in r['lines']]
             require(all(d>=0 and c>=0 for _,d,c in lines),'قيم القيد غير صحيحة.')
-            return {'id':db.manual_entry(r['date'],lines,r['description'])}
+            with db.transaction():
+                ident=db.manual_entry(r['date'],lines,r['description'])
+                source=db.scalar('SELECT SourceID FROM JournalEntry WHERE JournalEntryID=?',(ident,))
+                security.ownership(db,user,'ManualJournal',source)
+            return {'id':ident}
         if action=='reverse':
             original=int(r['id'])
             lines=[(x['AccountID'],x['Credit'],x['Debit']) for x in db.rows('SELECT * FROM JournalEntryDetail WHERE JournalEntryID=? ORDER BY JournalEntryDetailID',(original,))]
-            return {'id':db.manual_entry(r['date'],lines,r['description'],reversal_of=original)}
-        if action=='report': return report(db,r['kind'],r['from'],r['to'])
+            with db.transaction():
+                ident=db.manual_entry(r['date'],lines,r['description'],reversal_of=original)
+                source=db.scalar('SELECT SourceID FROM JournalEntry WHERE JournalEntryID=?',(ident,))
+                security.ownership(db,user,'ManualJournal',source)
+                security.audit(db,'REVERSE','JournalEntry',original,new={'ReversalID':ident})
+            return {'id':ident}
+        if action=='report':
+            result=report(db,r['kind'],r['from'],r['to'])
+            if not security.has(user,'costs.view'):
+                for row in result['rows']:
+                    for key in security.COST_COLUMNS|{'القيمة'}: row.pop(key,None)
+                for key in security.COST_COLUMNS|{'القيمة'}: result['scales'].pop(key,None)
+            if r.get('mode') in {'print','export'}:
+                security.audit(db,r['mode'].upper(),'report.'+r['kind'],0)
+            return result
         if action=='check': db.check();return {'message':'القاعدة سليمة؛ القيود والأرصدة والحركات متطابقة.'}
+        if action=='backup_previous':
+            previous=path.parent/'before-restore.sqlite'
+            require(previous.is_file(),'لا توجد نسخة سابقة للاستيراد.')
+            security.audit(db,'BACKUP_PREVIOUS','MobileSecurity',1)
+            return {'file':str(previous)}
         if action=='backup':
+            security.audit(db,'BACKUP','MobileSecurity',1)
             dest_path=path.parent/'export.sqlite'
             dest=sqlite3.connect(dest_path)
             try: db.conn.backup(dest)
@@ -334,7 +478,7 @@ def _dispatch(path, action, r):
             return {'file':str(dest_path),'message':'تم تجهيز نسخة SQLite كاملة.'}
         raise RuleError('أمر غير معروف.')
     finally:
-        db.close()
+        if db: db.close()
 
 def invoke(path, action, request='{}'):
     """Called by Chaquopy on one background executor, and by desktop tests."""

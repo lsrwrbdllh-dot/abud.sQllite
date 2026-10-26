@@ -69,6 +69,8 @@ class Database:
         self.conn.execute('PRAGMA busy_timeout=10000')
         require(self.scalar('PRAGMA foreign_keys') == 1, 'foreign keys must be enabled')
         self._depth = 0
+        # Optional local application actor; CLI/imported legacy entries remain NULL.
+        self.actor_user_id = None
 
     def close(self):
         self.conn.close()
@@ -233,7 +235,7 @@ class Database:
             self.conn.execute(f'UPDATE {table} SET JournalEntryID=? WHERE {SOURCES[table]}=?', (jid, ident))
         self.conn.execute("UPDATE PostingEvent SET Status='POSTED' WHERE EventID=?", (eid,))
         self.conn.execute(f"UPDATE {table} SET Status='POSTED' WHERE {SOURCES[table]}=?", (ident,))
-        self._insert('AuditLog', ActionType='POST', EntityName=table, AffectedRecordID=ident,
+        self._insert('AuditLog', UserID=self.actor_user_id, ActionType='POST', EntityName=table, AffectedRecordID=ident,
                  NewValues=json.dumps({'EventID': eid, 'JournalEntryID': jid}),
                  ActionAt=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))
         return eid
@@ -601,7 +603,7 @@ class Database:
             jid = self._journal(eid,lines,description,reversal_of)
             self.conn.execute("UPDATE PostingEvent SET Status='POSTED' WHERE EventID=?", (eid,))
             self.conn.execute("UPDATE ManualJournal SET Status='POSTED' WHERE ManualJournalID=?", (mid,))
-            self._insert('AuditLog',ActionType='POST',EntityName='ManualJournal',AffectedRecordID=mid,
+            self._insert('AuditLog',UserID=self.actor_user_id,ActionType='POST',EntityName='ManualJournal',AffectedRecordID=mid,
                      NewValues=json.dumps({'EventID':eid,'JournalEntryID':jid,'Reverses':reversal_of}),
                      ActionAt=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))
             return jid
