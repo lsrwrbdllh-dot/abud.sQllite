@@ -377,7 +377,8 @@ public final class MainActivity extends Activity {
         manager.print(name,new android.print.PrintDocumentAdapter(){
             public void onLayout(android.print.PrintAttributes old,android.print.PrintAttributes current,android.os.CancellationSignal signal,LayoutResultCallback callback,Bundle extras){if(signal.isCanceled()){callback.onLayoutCancelled();return;}callback.onLayoutFinished(new android.print.PrintDocumentInfo.Builder("document.pdf").setContentType(android.print.PrintDocumentInfo.CONTENT_TYPE_DOCUMENT).build(),true);}
             public void onWrite(android.print.PageRange[] ranges,android.os.ParcelFileDescriptor destination,android.os.CancellationSignal signal,WriteResultCallback callback){worker.execute(()->{
-                try(android.graphics.pdf.PdfDocument pdf=new android.graphics.pdf.PdfDocument()){
+                android.graphics.pdf.PdfDocument pdf=new android.graphics.pdf.PdfDocument();
+                try{
                     JSONObject data=(JSONObject)call(action,req);List<String> lines=new ArrayList<>();lines.add(name);
                     if(table!=null){printRow(lines,table,data);JSONArray children=data.optJSONArray("_lines");if(children!=null)for(int i=0;i<children.length();i++){JSONObject child=children.getJSONObject(i);lines.add(label(child.getString("table")));JSONArray rows=child.getJSONArray("rows");for(int j=0;j<rows.length();j++){lines.add("────────");printRow(lines,child.getString("table"),rows.getJSONObject(j));}}}
                     else{JSONArray rows=data.getJSONArray("rows");JSONObject scales=data.getJSONObject("scales");for(int i=0;i<rows.length();i++){JSONObject row=rows.getJSONObject(i);Iterator<String> keys=row.keys();while(keys.hasNext()){String k=keys.next();lines.add(k+": "+cell(row,k,scales));}lines.add("────────");}}
@@ -386,7 +387,7 @@ public final class MainActivity extends Activity {
                     for(int offset=0,pageNo=1;offset<wrapped.size();offset+=48,pageNo++){if(signal.isCanceled()){callback.onWriteCancelled();return;}
                         android.graphics.pdf.PdfDocument.Page page=pdf.startPage(new android.graphics.pdf.PdfDocument.PageInfo.Builder(595,842,pageNo).create());int count=Math.min(48,wrapped.size()-offset);for(int i=0;i<count;i++)page.getCanvas().drawText(wrapped.get(offset+i),555,50+i*16,paint);pdf.finishPage(page);}
                     try(OutputStream out=new FileOutputStream(destination.getFileDescriptor())){pdf.writeTo(out);}callback.onWriteFinished(new android.print.PageRange[]{android.print.PageRange.ALL_PAGES});
-                }catch(Exception error){callback.onWriteFailed(error.getMessage());}
+                }catch(Exception error){callback.onWriteFailed(error.getMessage());}finally{pdf.close();}
             });}
         },new android.print.PrintAttributes.Builder().setMediaSize(android.print.PrintAttributes.MediaSize.ISO_A4).build());
     }
