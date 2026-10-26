@@ -32,6 +32,9 @@ public final class MainActivity extends Activity {
     private boolean pending;
     private static final int IMPORT=41, BACKUP=42, CSV=43;
     private String csvText="";
+    private volatile String session="";
+    private String exportAction="";
+    private JSONObject exportRequest;
     private final int teal=Color.rgb(18,92,96), ink=Color.rgb(23,60,64);
     private interface Reply { void done(Object result) throws Exception; }
     private interface Job { void run() throws Exception; }
@@ -46,11 +49,12 @@ public final class MainActivity extends Activity {
             try {
                 if(!Python.isStarted()) Python.start(new AndroidPlatform(this));
                 Object status=call("status",new JSONObject());
-                runOnUiThread(()->{try{if(((JSONObject)status).getBoolean("exists"))loadCatalog();else welcome();}catch(Exception e){error(e);}});
+                runOnUiThread(()->{try{route((JSONObject)status);}catch(Exception e){error(e);}});
             } catch(Exception e) { runOnUiThread(()->error(e)); }
         });
     }
     private Object call(String action,JSONObject request) throws Exception {
+        request.put("_session",session);
         String json=Python.getInstance().getModule("database.mobile_bridge").callAttr("invoke",database,action,request.toString()).toString();
         JSONObject response=new JSONObject(json);
         if(!response.getBoolean("ok")) throw new Exception(response.getString("error"));
@@ -67,7 +71,7 @@ public final class MainActivity extends Activity {
             runOnUiThread(()->{
                 pending=false;busy.setText("");
                 if(isDestroyed()||isFinishing())return;
-                if(problem!=null){error(problem);return;}
+                if(problem!=null){if(problem.getMessage()!=null&&(problem.getMessage().contains("انتهت الجلسة")||problem.getMessage().contains("الحساب موقوف"))){clearSession();login(false);}error(problem);return;}
                 if(page!=generation)return;
                 try{reply.done(answer);}catch(Exception e){error(e);}
             });
@@ -105,21 +109,87 @@ public final class MainActivity extends Activity {
         screen("محاسبة على هاتفك");text("قاعدة SQLite كاملة على الجهاز. لا تحتاج عنوان خادم أو اشتراك استضافة.");
         EditText branch=input("اسم المتجر","",InputType.TYPE_CLASS_TEXT);
         EditText currency=input("اسم العملة","",InputType.TYPE_CLASS_TEXT);
-        button("إنشاء متجر جديد",()->request("initialize",obj("branch",branch.getText().toString(),"currency",currency.getText().toString()),r->loadCatalog()));
+        EditText username=input("اسم مستخدم المدير","",InputType.TYPE_CLASS_TEXT);
+        EditText password=input("كلمة مرور المدير (8 أحرف على الأقل)","",InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        button("إنشاء متجر جديد",()->request("initialize",obj("branch",branch.getText().toString(),"currency",currency.getText().toString(),"username",username.getText().toString(),"password",password.getText().toString()),r->{session=((JSONObject)r).getString("token");loadCatalog();}));
         button("استيراد قاعدة abud.sQllite موجودة",this::chooseImport);
         text("الإنشاء الجديد يجهز دليل الحسابات والصندوق والبنك والسنة الحالية؛ المنتجات والأرصدة والحركات تبدأ فارغة.");
+    }
+    private void clearSession(){session="";catalog=null;tables.clear();csvText="";exportRequest=null;}
+    private void route(JSONObject status)throws Exception {if(!status.getBoolean("exists"))welcome();else login(!status.getBoolean("configured"));}
+    private void login(boolean setup){
+        screen(setup?"إعداد حساب المدير":"تسجيل الدخول");
+        text(setup?"أنشئ حساب المدير لحماية بيانات المتجر الحالية. لن تتغير الحركات المحاسبية.":"أدخل حسابك. الصلاحيات والصندوق تحدد ما يمكنك عرضه وتنفيذه.");
+        EditText username=input("اسم المستخدم","",InputType.TYPE_CLASS_TEXT);
+        EditText password=input("كلمة المرور","",InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        button(setup?"حفظ حساب المدير":"دخول",()->request(setup?"bootstrap":"login",obj("username",username.getText().toString(),"password",password.getText().toString()),r->{session=((JSONObject)r).getString("token");password.setText("");loadCatalog();}));
+    }
+    private boolean has(String permission){if(catalog==null)return false;JSONObject user=catalog.optJSONObject("user");if(user==null)return false;if(user.optBoolean("manager"))return true;JSONArray rights=user.optJSONArray("permissions");if(rights!=null)for(int i=0;i<rights.length();i++)if(permission.equals(rights.optString(i)))return true;return false;}
+    private boolean right(JSONObject meta,String action){return meta.optJSONObject("rights")!=null&&meta.optJSONObject("rights").optBoolean(action);}
+    private void password(){
+        screen("تغيير كلمة المرور");
+        EditText old=input("كلمة المرور الحالية","",InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        EditText next=input("كلمة المرور الجديدة","",InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        EditText repeat=input("تأكيد كلمة المرور الجديدة","",InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        button("حفظ كلمة المرور",()->{if(!next.getText().toString().equals(repeat.getText().toString()))throw new Exception("تأكيد كلمة المرور غير مطابق.");request("password",obj("old",old.getText().toString(),"password",next.getText().toString()),r->{clearSession();login(false);});});
+    }
+    private void users(){
+        screen("إدارة الموظفين والصلاحيات");
+        request("users",new JSONObject(),r->{JSONObject data=(JSONObject)r;
+            button("إضافة موظف",()->userForm(data,null));JSONArray users=data.getJSONArray("users");
+            for(int i=0;i<users.length();i++){JSONObject user=users.getJSONObject(i);button(user.getString("Username")+" — "+user.getString("EmployeeName")+(user.optInt("IsActive")==1?" — نشط":" — موقوف"),()->userForm(data,user));}
+            text("لكل موظف حسابه. تعديل الحساب أو الصلاحيات ينهي جلساته. لا يمكن إيقاف آخر مدير نشط.");
+        });
+    }
+    private void userForm(JSONObject data,JSONObject user)throws Exception {
+        screen(user==null?"إضافة موظف":"تعديل حساب الموظف");
+        EditText name=input("اسم الموظف",user==null?"":user.getString("EmployeeName"),InputType.TYPE_CLASS_TEXT);
+        EditText username=input("اسم مستخدم الموظف",user==null?"":user.getString("Username"),InputType.TYPE_CLASS_TEXT);
+        EditText password=input("كلمة مرور الموظف (اتركها فارغة للإبقاء على الحالية)","",InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        CheckBox active=new CheckBox(this);active.setText("الحساب نشط");active.setChecked(user==null||user.optInt("IsActive")==1);body.addView(active);
+        List<String> codes=Arrays.asList("cashier","purchasing","stock","accountant","manager");
+        List<String> labels=new ArrayList<>();for(String code:codes)labels.add(data.getJSONObject("roles").getString(code));
+        text("دور الموظف");Spinner role=new Spinner(this);role.setContentDescription("دور الموظف");role.setAdapter(new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,labels));body.addView(role);
+        String initial=user==null?"cashier":user.getJSONArray("roles").optString(0,"cashier");role.setSelection(Math.max(0,codes.indexOf(initial)));
+        JSONObject overrides=user==null?new JSONObject():new JSONObject(user.getJSONObject("overrides").toString());
+        final String[] chosen={initial};
+        role.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){public void onNothingSelected(AdapterView<?> p){}public void onItemSelected(AdapterView<?> p,View v,int pos,long id){String next=codes.get(pos);if(!next.equals(chosen[0])){Iterator<String> ks=overrides.keys();while(ks.hasNext()){ks.next();ks.remove();}chosen[0]=next;}}});
+        button("تخصيص صلاحيات الموظف",()->{
+            String code=codes.get(role.getSelectedItemPosition());
+            if(code.equals("manager")){alert("المدير يملك جميع الصلاحيات، مع بقاء ضوابط الحركات المعتمدة.");return;}
+            JSONObject catalog=data.getJSONObject("permissions");List<String> keys=new ArrayList<>();Iterator<String> iterator=catalog.keys();while(iterator.hasNext())keys.add(iterator.next());Collections.sort(keys);
+            Set<String> defaults=new HashSet<>();JSONArray rights=data.getJSONObject("defaults").getJSONArray(code);for(int i=0;i<rights.length();i++)defaults.add(rights.getString(i));
+            String[] names=new String[keys.size()];boolean[] checked=new boolean[keys.size()];for(int i=0;i<keys.size();i++){String k=keys.get(i);names[i]=catalog.getString(k);checked[i]=overrides.has(k)?overrides.getBoolean(k):defaults.contains(k);}
+            new AlertDialog.Builder(this).setTitle("صلاحيات — "+data.getJSONObject("roles").getString(code)).setMultiChoiceItems(names,checked,(d,index,value)->checked[index]=value).setNegativeButton("إلغاء",null).setPositiveButton("تطبيق",(d,w)->act(()->{
+                Iterator<String> ks=overrides.keys();while(ks.hasNext()){ks.next();ks.remove();}
+                for(int i=0;i<keys.size();i++)if(checked[i]!=defaults.contains(keys.get(i)))overrides.put(keys.get(i),checked[i]);
+            })).show();
+        });
+        text("الصناديق والبنوك المسموح استخدامها (إذن جميع الصناديق يتجاوز هذه القائمة)");
+        Map<Integer,CheckBox> accounts=new LinkedHashMap<>();Set<Integer> selected=new HashSet<>();if(user!=null){JSONArray all=user.getJSONArray("cash");for(int i=0;i<all.length();i++)selected.add(all.getInt(i));}
+        JSONArray all=data.getJSONArray("accounts");for(int i=0;i<all.length();i++){JSONObject account=all.getJSONObject(i);int id=account.getInt("FinancialAccountID");CheckBox checkbox=new CheckBox(this);checkbox.setText(account.getString("AccountName"));checkbox.setChecked(selected.contains(id));body.addView(checkbox);accounts.put(id,checkbox);}
+        button("حفظ الموظف والصلاحيات",()->{
+            JSONArray cash=new JSONArray();for(Map.Entry<Integer,CheckBox> entry:accounts.entrySet())if(entry.getValue().isChecked())cash.put(entry.getKey());
+            JSONObject req=obj("name",name.getText().toString(),"username",username.getText().toString(),"password",password.getText().toString(),"active",active.isChecked(),"role",codes.get(role.getSelectedItemPosition()),"overrides",overrides,"cash",cash);
+            if(user!=null)req.put("id",user.getInt("UserID"));request("user_save",req,r->{password.setText("");if(user!=null&&user.getInt("UserID")==catalog.getJSONObject("user").getInt("id")){clearSession();login(false);}else users();});
+        });
+        text("عرض عمليات الجميع يمنح الوصول إلى مستندات الموظفين الآخرين ضمن الأقسام المسموحة. النسخ الاحتياطي الكامل يحتوي جميع بيانات المتجر وحسابات المستخدمين.");
     }
     private void loadCatalog(){request("schema",new JSONObject(),r->{catalog=(JSONObject)r;tables.clear();JSONArray all=catalog.getJSONArray("tables");for(int i=0;i<all.length();i++){JSONObject t=all.getJSONObject(i);tables.put(t.getString("name"),t);}home();});}
     private String label(String name){return tables.containsKey(name)?tables.get(name).optString("label",name):name;}
     private void home() throws Exception {
         screen("محاسبة المتجر");text("تعمل محلياً • العملة: "+catalog.getString("currency"));
-        button("بيع جديد",()->list("SalesInvoice",new JSONObject(),0,""));
-        button("شراء جديد واستلام المخزون",()->list("PurchaseInvoice",new JSONObject(),0,""));
+        text("المستخدم: "+catalog.getJSONObject("user").getString("username"));
+        if(tables.containsKey("SalesInvoice"))button("بيع جديد",()->list("SalesInvoice",new JSONObject(),0,""));
+        if(tables.containsKey("PurchaseInvoice"))button("شراء جديد واستلام المخزون",()->list("PurchaseInvoice",new JSONObject(),0,""));
         button("التقارير والأرصدة",this::reports);
-        button("قيد يومية يدوي / تمويل رأس المال",this::manual);
+        if(has("journal.manual"))button("قيد يومية يدوي / تمويل رأس المال",this::manual);
+        if(has("users.manage"))button("إدارة الموظفين والصلاحيات",this::users);
         JSONObject groups=catalog.getJSONObject("groups");Iterator<String> names=groups.keys();
         while(names.hasNext()){String name=names.next();button(name,()->group(name));}
-        button("نسخ احتياطي واستيراد وفحص",this::maintenance);
+        if(has("backup.create")||has("backup.restore")||has("database.check"))button("نسخ احتياطي واستيراد وفحص",this::maintenance);
+        button("تغيير كلمة المرور",this::password);
+        button("تسجيل الخروج",()->request("logout",new JSONObject(),r->{clearSession();login(false);}));
         text("ابدأ بالمنتجات والموردين. اعتماد الشراء يثبت الاستحقاق؛ المخزون يدخل عند اعتماد الاستلام ودفعاته. المستند المعتمد لا يعدل مباشرة.");
     }
     private void group(String name) throws Exception {
@@ -148,8 +218,9 @@ public final class MainActivity extends Activity {
         if(filters.length()>0)text("سجلات مرتبطة بالمستند المحدد");
         EditText query=input("بحث داخل السجلات",search,InputType.TYPE_CLASS_TEXT);
         button("بحث",()->list(table,filters,0,query.getText().toString()));
-        if(meta.getBoolean("editable"))button("إضافة سجل",()->form(table,null,filters));
-        if(table.equals("ManualJournal"))button("قيد يدوي جديد",this::manual);
+        if(meta.getBoolean("editable")&&right(meta,"create"))button("إضافة سجل",()->form(table,null,filters));
+        if(table.equals("ManualJournal")&&has("journal.manual"))button("قيد يدوي جديد",this::manual);
+        if(right(meta,"export"))button("تصدير السجلات CSV",()->prepareExport("export_rows",obj("table",table,"filters",filters,"search",search)));
         request("rows",obj("table",table,"filters",filters,"offset",offset,"search",search),answer->{
             JSONObject result=(JSONObject)answer;JSONArray rows=result.getJSONArray("rows");
             text("إجمالي السجلات: "+result.getInt("total")+" • الصفحة "+(offset/50+1));
@@ -166,12 +237,13 @@ public final class MainActivity extends Activity {
             if(row.has("_summary")){JSONObject summary=row.getJSONObject("_summary");Iterator<String> names=summary.keys();while(names.hasNext()){String name=names.next();text(name+": "+summary.getString(name));}}
             boolean posted=row.optString("Status").equals("POSTED");
             if(meta.getBoolean("editable")&&!posted){
-                button("تعديل",()->form(table,row,new JSONObject()));
-                button("حذف المسودة / السجل غير المستخدم",()->confirm("الحذف يرفض السجل المستخدم أو المعتمد. هل تريد المتابعة؟",()->request("delete",obj("table",table,"key",k),r->list(table,new JSONObject(),0,""))));
+                if(right(meta,"update"))button("تعديل",()->form(table,row,new JSONObject()));
+                if(right(meta,"delete"))button("حذف المسودة / السجل غير المستخدم",()->confirm("الحذف يرفض السجل المستخدم أو المعتمد. هل تريد المتابعة؟",()->request("delete",obj("table",table,"key",k),r->list(table,new JSONObject(),0,""))));
             }
+            if(right(meta,"print"))button("طباعة المستند",()->print(label(table),"print_record",obj("table",table,"key",k),table));
             if(meta.getBoolean("postable")&&!posted)button("اعتماد وترحيل المستند",()->confirm("سيرحّل المستند والمخزون والقيود المرتبطة به، ثم يقفل التعديل. تأكد من اكتمال الأسطر أولاً.",()->request("post",obj("table",table,"id",k.get(k.keys().next())),r->{alert(((JSONObject)r).getString("message"));detail(table,k);})));
             if(meta.getBoolean("freezable")&&!posted)button("تثبيت لقطة الجرد",()->request("freeze",obj("id",k.get("InventoryCountID")),r->detail(table,k)));
-            if(table.equals("JournalEntry")&&row.optString("SourceType").equals("ManualJournal"))button("إنشاء قيد عكسي موثق",()->reverse(row.getLong("JournalEntryID")));
+            if(table.equals("JournalEntry")&&row.optString("SourceType").equals("ManualJournal")&&has("journal.reverse"))button("إنشاء قيد عكسي موثق",()->reverse(row.getLong("JournalEntryID")));
             JSONArray children=meta.getJSONArray("children");
             if(children.length()>0)text("الأسطر والسجلات المرتبطة");
             for(int i=0;i<children.length();i++){JSONObject ch=children.getJSONObject(i);String child=ch.getString("table");Object target=row.opt(ch.getString("target"));if(target==null||target==JSONObject.NULL)continue;
@@ -278,22 +350,58 @@ public final class MainActivity extends Activity {
     private void reports() throws Exception {
         screen("التقارير");EditText start=dateField("من",LocalDate.now().withDayOfMonth(1).toString()),end=dateField("إلى",LocalDate.now().toString());
         String[] kinds={"trial","income","financial","stock","transit","customers","suppliers"},names={"ميزان المراجعة","قائمة الدخل","أرصدة وحركات الصناديق والبنوك","المخزون والدفعات والصلاحية الحالية","المخزون قيد النقل","ذمم العملاء والمقدمات","ذمم الموردين والمقدمات"};
-        for(int i=0;i<kinds.length;i++){String kind=kinds[i],name=names[i];button(name,()->request("report",obj("kind",kind,"from",start.getText().toString(),"to",end.getText().toString()),answer->{
-            JSONObject report=(JSONObject)answer;screen(name);if(report.has("asOf"))text(report.getString("asOf"));JSONArray rows=report.getJSONArray("rows");JSONObject scales=report.getJSONObject("scales");StringBuilder csv=new StringBuilder("\uFEFF");
-            List<String> headers=new ArrayList<>();if(rows.length()>0){Iterator<String> ks=rows.getJSONObject(0).keys();while(ks.hasNext())headers.add(ks.next());}
-            csv.append(csvLine(headers));for(int index=0;index<rows.length();index++){JSONObject row=rows.getJSONObject(index);StringBuilder display=new StringBuilder();List<String> cells=new ArrayList<>();for(String h:headers){String value=row.isNull(h)?"":row.get(h).toString();if(scales.has(h))value=new BigDecimal(value).divide(BigDecimal.valueOf(scales.getInt(h))).toPlainString();cells.add(value);display.append(h).append(": ").append(value).append("\n");}text(display.toString());csv.append(csvLine(cells));}
-            if(rows.length()==0)text("لا توجد بيانات خلال الفترة.");else button("حفظ تقرير CSV",()->{csvText=csv.toString();createDocument("text/csv","report-"+LocalDate.now()+".csv",CSV);});
-        }));}
-        button("دفتر اليومية الكامل",()->list("JournalEntry",new JSONObject(),0,""));button("تفاصيل الحركات المالية",()->list("FinancialTransaction",new JSONObject(),0,""));
+        for(int i=0;i<kinds.length;i++){String kind=kinds[i],name=names[i];if(!has("report."+kind+".view"))continue;
+            button(name,()->request("report",obj("kind",kind,"from",start.getText().toString(),"to",end.getText().toString()),answer->{
+                JSONObject report=(JSONObject)answer;screen(name);if(report.has("asOf"))text(report.getString("asOf"));JSONArray rows=report.getJSONArray("rows");JSONObject scales=report.getJSONObject("scales");
+                for(int index=0;index<rows.length();index++){JSONObject row=rows.getJSONObject(index);StringBuilder display=new StringBuilder();Iterator<String> headers=row.keys();while(headers.hasNext()){String h=headers.next();String value=cell(row,h,scales);display.append(h).append(": ").append(value).append("\n");}text(display.toString());}
+                if(rows.length()==0)text("لا توجد بيانات خلال الفترة.");
+                if(has("report."+kind+".export"))button("حفظ تقرير CSV",()->prepareExport("report",obj("kind",kind,"from",start.getText().toString(),"to",end.getText().toString(),"mode","export")));
+                if(has("report."+kind+".print"))button("طباعة التقرير",()->print(name,"report",obj("kind",kind,"from",start.getText().toString(),"to",end.getText().toString(),"mode","print"),null));
+            }));
+        }
+        if(tables.containsKey("JournalEntry"))button("دفتر اليومية الكامل",()->list("JournalEntry",new JSONObject(),0,""));
+        if(tables.containsKey("FinancialTransaction"))button("تفاصيل الحركات المالية",()->list("FinancialTransaction",new JSONObject(),0,""));
+    }
+    private String cell(JSONObject row,String key,JSONObject scales)throws Exception {
+        if(row.isNull(key))return "";String value=row.get(key).toString();return scales.has(key)?new BigDecimal(value).divide(BigDecimal.valueOf(scales.getInt(key))).toPlainString():value;
+    }
+    private String csv(JSONObject response)throws Exception {
+        JSONArray rows=response.getJSONArray("rows");JSONObject scales=response.optJSONObject("scales");if(scales==null)scales=new JSONObject();
+        List<String> headers=new ArrayList<>();if(rows.length()>0){Iterator<String> ks=rows.getJSONObject(0).keys();while(ks.hasNext())headers.add(ks.next());}
+        StringBuilder out=new StringBuilder("\uFEFF");out.append(csvLine(headers));
+        for(int i=0;i<rows.length();i++){List<String> cells=new ArrayList<>();for(String h:headers)cells.add(cell(rows.getJSONObject(i),h,scales));out.append(csvLine(cells));}return out.toString();
+    }
+    private void prepareExport(String action,JSONObject req){request(action,req,r->{exportAction=action;exportRequest=req;createDocument("text/csv","report-"+LocalDate.now()+".csv",CSV);});}
+    private void print(String name,String action,JSONObject req,String table){
+        android.print.PrintManager manager=(android.print.PrintManager)getSystemService(PRINT_SERVICE);
+        manager.print(name,new android.print.PrintDocumentAdapter(){
+            public void onLayout(android.print.PrintAttributes old,android.print.PrintAttributes current,android.os.CancellationSignal signal,LayoutResultCallback callback,Bundle extras){if(signal.isCanceled()){callback.onLayoutCancelled();return;}callback.onLayoutFinished(new android.print.PrintDocumentInfo.Builder("document.pdf").setContentType(android.print.PrintDocumentInfo.CONTENT_TYPE_DOCUMENT).build(),true);}
+            public void onWrite(android.print.PageRange[] ranges,android.os.ParcelFileDescriptor destination,android.os.CancellationSignal signal,WriteResultCallback callback){worker.execute(()->{
+                try(android.graphics.pdf.PdfDocument pdf=new android.graphics.pdf.PdfDocument()){
+                    JSONObject data=(JSONObject)call(action,req);List<String> lines=new ArrayList<>();lines.add(name);
+                    if(table!=null){printRow(lines,table,data);JSONArray children=data.optJSONArray("_lines");if(children!=null)for(int i=0;i<children.length();i++){JSONObject child=children.getJSONObject(i);lines.add(label(child.getString("table")));JSONArray rows=child.getJSONArray("rows");for(int j=0;j<rows.length();j++){lines.add("────────");printRow(lines,child.getString("table"),rows.getJSONObject(j));}}}
+                    else{JSONArray rows=data.getJSONArray("rows");JSONObject scales=data.getJSONObject("scales");for(int i=0;i<rows.length();i++){JSONObject row=rows.getJSONObject(i);Iterator<String> keys=row.keys();while(keys.hasNext()){String k=keys.next();lines.add(k+": "+cell(row,k,scales));}lines.add("────────");}}
+                    List<String> wrapped=new ArrayList<>();for(String line:lines){for(int i=0;i<line.length();i+=65)wrapped.add(line.substring(i,Math.min(i+65,line.length())));}
+                    android.graphics.Paint paint=new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);paint.setTextSize(12);paint.setTextAlign(android.graphics.Paint.Align.RIGHT);
+                    for(int offset=0,pageNo=1;offset<wrapped.size();offset+=48,pageNo++){if(signal.isCanceled()){callback.onWriteCancelled();return;}
+                        android.graphics.pdf.PdfDocument.Page page=pdf.startPage(new android.graphics.pdf.PdfDocument.PageInfo.Builder(595,842,pageNo).create());int count=Math.min(48,wrapped.size()-offset);for(int i=0;i<count;i++)page.getCanvas().drawText(wrapped.get(offset+i),555,50+i*16,paint);pdf.finishPage(page);}
+                    try(OutputStream out=new FileOutputStream(destination.getFileDescriptor())){pdf.writeTo(out);}callback.onWriteFinished(new android.print.PageRange[]{android.print.PageRange.ALL_PAGES});
+                }catch(Exception error){callback.onWriteFailed(error.getMessage());}
+            });}
+        },new android.print.PrintAttributes.Builder().setMediaSize(android.print.PrintAttributes.MediaSize.ISO_A4).build());
+    }
+    private void printRow(List<String> lines,String table,JSONObject row)throws Exception {
+        JSONObject meta=tables.get(table);if(meta==null)return;JSONArray fields=meta.getJSONArray("columns");for(int i=0;i<fields.length();i++){JSONObject field=fields.getJSONObject(i);if(!field.optBoolean("secret"))lines.add(field.getString("label")+": "+show(field,row.opt(field.getString("name"))));}
+        JSONObject totals=row.optJSONObject("_summary");if(totals!=null){Iterator<String> keys=totals.keys();while(keys.hasNext()){String key=keys.next();lines.add(key+": "+totals.getString(key));}}
     }
     private String csvLine(List<String> cells){List<String> safe=new ArrayList<>();for(String cell:cells){if(!cell.isEmpty()&&"=+-@\t\r\n".indexOf(cell.charAt(0))>=0)cell="'"+cell;safe.add("\""+cell.replace("\"","\"\"")+"\"");}return String.join(",",safe)+"\r\n";}
     private void maintenance()throws Exception {
         screen("حفظ البيانات واستيرادها");text("النسخة الاحتياطية تشمل جميع الجداول والحقول والحركات. احفظ نسخة خارج الهاتف بانتظام.");
-        button("تصدير نسخة SQLite كاملة",()->createDocument("application/octet-stream","supermarket-"+LocalDate.now()+".sqlite",BACKUP));
-        button("استيراد قاعدة SQLite",this::chooseImport);
-        button("فحص سلامة القاعدة والحسابات",()->request("check",new JSONObject(),r->alert(((JSONObject)r).getString("message"))));
-        button("تصدير النسخة المحفوظة قبل آخر استيراد",()->{File f=new File(getFilesDir(),"before-restore.sqlite");if(!f.exists())throw new Exception("لا توجد نسخة سابقة للاستيراد.");createDocument("application/octet-stream","before-restore.sqlite",44);});
-        text("النسخة المحلية مخصصة لمالك الهاتف. جداول المستخدمين والأدوار محفوظة ضمن قاعدة البيانات.");
+        if(has("backup.create"))button("تصدير نسخة SQLite كاملة",()->createDocument("application/octet-stream","supermarket-"+LocalDate.now()+".sqlite",BACKUP));
+        if(has("backup.restore"))button("استيراد قاعدة SQLite",this::chooseImport);
+        if(has("database.check"))button("فحص سلامة القاعدة والحسابات",()->request("check",new JSONObject(),r->alert(((JSONObject)r).getString("message"))));
+        if(has("backup.create"))button("تصدير النسخة المحفوظة قبل آخر استيراد",()->createDocument("application/octet-stream","before-restore.sqlite",44));
+        text("النسخة الكاملة تشمل جميع بيانات المتجر وحسابات الموظفين. الاستيراد ينهي الجلسات ويتطلب الدخول بحساب موجود في القاعدة المستوردة.");
     }
     private void createDocument(String mime,String name,int code){Intent i=new Intent(Intent.ACTION_CREATE_DOCUMENT);i.setType(mime);i.addCategory(Intent.CATEGORY_OPENABLE);i.putExtra(Intent.EXTRA_TITLE,name);startActivityForResult(i,code);}
     private void chooseImport(){confirm("سيستبدل الملف قاعدة المتجر الحالية بعد فحصه. تحفظ نسخة من القاعدة السابقة على الهاتف. اختر ملفاً مطابقاً لقاعدة abud.sQllite.",()->{Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT);i.addCategory(Intent.CATEGORY_OPENABLE);i.setType("*/*");startActivityForResult(i,IMPORT);});}
@@ -301,9 +409,9 @@ public final class MainActivity extends Activity {
         super.onActivityResult(code,result,data);if(result!=RESULT_OK||data==null||data.getData()==null)return;Uri uri=data.getData();pending=true;busy.setText("جارٍ معالجة الملف…");
         worker.execute(()->{Exception problem=null;try{
             if(code==IMPORT){File staged=new File(getFilesDir(),"import.sqlite");try(InputStream in=getContentResolver().openInputStream(uri);OutputStream out=new FileOutputStream(staged)){transfer(in,out,100*1024*1024);}try{call("restore",new JSONObject());}finally{staged.delete();}}
-            else if(code==CSV){try(OutputStream out=getContentResolver().openOutputStream(uri,"wt")){out.write(csvText.getBytes(java.nio.charset.StandardCharsets.UTF_8));}}
-            else{String file=code==44?new File(getFilesDir(),"before-restore.sqlite").getAbsolutePath():((JSONObject)call("backup",new JSONObject())).getString("file");try(InputStream in=new FileInputStream(file);OutputStream out=getContentResolver().openOutputStream(uri,"wt")){transfer(in,out,Long.MAX_VALUE);}}
-        }catch(Exception e){problem=e;}Exception failure=problem;runOnUiThread(()->{pending=false;busy.setText("");if(failure!=null)error(failure);else if(code==IMPORT)loadCatalog();else alert("تم حفظ الملف في المكان الذي اخترته.");});});
+            else if(code==CSV){if(exportRequest==null)throw new Exception("أعد فتح التقرير لتصديره.");String content=csv((JSONObject)call(exportAction,exportRequest));try(OutputStream out=getContentResolver().openOutputStream(uri,"wt")){out.write(content.getBytes(java.nio.charset.StandardCharsets.UTF_8));}}
+            else{String file=((JSONObject)call(code==44?"backup_previous":"backup",new JSONObject())).getString("file");try(InputStream in=new FileInputStream(file);OutputStream out=getContentResolver().openOutputStream(uri,"wt")){transfer(in,out,Long.MAX_VALUE);}}
+        }catch(Exception e){problem=e;}Exception failure=problem;runOnUiThread(()->{pending=false;busy.setText("");if(isDestroyed()||isFinishing())return;if(failure!=null)error(failure);else if(code==IMPORT){clearSession();request("status",new JSONObject(),r->route((JSONObject)r));}else alert("تم حفظ الملف في المكان الذي اخترته.");});});
     }
     private void transfer(InputStream in,OutputStream out,long max)throws IOException {if(in==null||out==null)throw new IOException("تعذر فتح الملف.");byte[] buffer=new byte[65536];long total=0;int count;while((count=in.read(buffer))!=-1){total+=count;if(total>max)throw new IOException("حجم الملف يتجاوز 100 ميغابايت.");out.write(buffer,0,count);}out.flush();}
     @Override public void onBackPressed(){if(pending){Toast.makeText(this,"انتظر اكتمال الحفظ.",Toast.LENGTH_SHORT).show();return;}if(catalog!=null)act(this::home);else super.onBackPressed();}

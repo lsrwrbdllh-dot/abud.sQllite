@@ -78,7 +78,9 @@ try:
     find('محاسبة على هاتفك',timeout=60)
     enter('اسم المتجر','OfflineStore')
     enter('اسم العملة','UNIT')
-    tap('إنشاء متجر جديد')
+    enter('اسم مستخدم المدير','admin')
+    enter('كلمة مرور المدير (8 أحرف على الأقل)','admin-pass-123')
+    tap('إنشاء متجر جديد',scroll=True)
     find('تعمل محلياً • العملة: UNIT')
     tap('المخزون والفروع',scroll=True)
     tap('تصنيفات المنتجات')
@@ -101,6 +103,10 @@ try:
     find('الحالة: معتمد')
     adb('shell','am','force-stop',PACKAGE)
     adb('shell','am','start','-W','-n',PACKAGE+'/com.abud.supermarket.MainActivity')
+    find('تسجيل الدخول',timeout=60)
+    enter('اسم المستخدم','admin')
+    enter('كلمة المرور','admin-pass-123')
+    tap('دخول')
     find('تعمل محلياً • العملة: UNIT')
     tap('المخزون والفروع',scroll=True)
     tap('تصنيفات المنتجات')
@@ -110,8 +116,32 @@ try:
         if any('OfflineCategory' in n.get('text','') for n in nodes()):found=True;break
         time.sleep(.5)
     assert found,'Created category was lost after process restart.'
+    tap('الرئيسية')
+    tap('إدارة الموظفين والصلاحيات')
+    tap('إضافة موظف')
+    enter('اسم الموظف','Cashier')
+    enter('اسم مستخدم الموظف','cashier')
+    enter('كلمة مرور الموظف (اتركها فارغة للإبقاء على الحالية)','employee-pass')
+    tap('الصندوق الرئيسي',scroll=True)
+    tap('حفظ الموظف والصلاحيات',scroll=True)
+    find('cashier — Cashier — نشط')
+    tap('الرئيسية')
+    tap('تسجيل الخروج',scroll=True)
+    find('تسجيل الدخول')
+    enter('اسم المستخدم','cashier')
+    enter('كلمة المرور','employee-pass')
+    tap('دخول')
+    find('المستخدم: cashier')
+    visible=set()
+    for _ in range(10):
+        visible.update(n.get('text','') for n in nodes())
+        adb('shell','input','swipe','500','1750','500','450','250')
+    for forbidden in ('إدارة الموظفين والصلاحيات','قيد يومية يدوي / تمويل رأس المال','نسخ احتياطي واستيراد وفحص','شراء جديد واستلام المخزون'):
+        assert forbidden not in visible,'Cashier received a restricted screen: '+forbidden
+    tap('تسجيل الخروج',scroll=True)
+    find('تسجيل الدخول')
     assert adb('shell','pidof',PACKAGE),'App exited.'
-    print('PASS: packaged APK opened offline, initialized SQLite, saved a category, posted a balanced capital journal and retained data after force-stop.')
+    print('PASS: APK opened offline, created a manager, saved a category, posted capital, required login after restart, retained data, created a cashier and restricted cashier navigation.')
 finally:
     (OUT/'logcat.txt').write_text(adb('logcat','-d',check=False),encoding='utf-8')
     with (OUT/'screen.png').open('wb') as image:
