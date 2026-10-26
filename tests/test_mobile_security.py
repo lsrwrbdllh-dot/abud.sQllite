@@ -189,6 +189,21 @@ class SecurityTests(unittest.TestCase):
         self.no(self.admin,'save',table='JournalEntry',key={'JournalEntryID':original},values={'Description':'tamper'})
         self.ok(self.admin,'check')
 
+    def test_cashier_posts_real_sale_with_actor_and_only_own_financial_movements(self):
+        self.demo()
+        uid,token=self.employee(overrides={'FinancialTransaction.view':True})
+        ident=self.add(token,'SalesInvoice',BranchID='1',WarehouseID='1',InvoiceDate='2026-01-20',SaleType='CASH',FinancialAccountID='1')
+        self.add(token,'SalesInvoiceDetail',SalesInvoiceID=str(ident),ProductID='1',Quantity='1',UnitPrice='10')
+        self.ok(token,'post',table='SalesInvoice',id=ident)
+        self.assertEqual(self.sql("SELECT UserID FROM AuditLog WHERE ActionType='POST' AND EntityName='SalesInvoice' AND AffectedRecordID=?",(ident,))[0][0],uid)
+        moves=self.ok(token,'rows',table='FinancialTransaction')['rows']
+        self.assertEqual(len(moves),1)
+        self.assertEqual((moves[0]['SourceType'],moves[0]['SourceID']),('SalesInvoice',ident))
+        forged=self.ok(token,'schema',UserID=1,user_id=1)
+        self.assertEqual(forged['user']['id'],uid)
+        self.no(token,'save',table='SalesInvoice',key={'SalesInvoiceID':ident},values={'InvoiceDate':'2026-01-21'})
+        self.ok(self.admin,'check')
+
     def test_disabled_user_and_password_reset_invalidate_all_existing_sessions(self):
         uid,token=self.employee();other=self.ok(None,'login',username='cashier',password='employee-pass')['token']
         self.ok(self.admin,'user_save',id=uid,name='cashier',username='cashier',role='cashier',active=False,cash=[1])
@@ -250,6 +265,13 @@ class SecurityTests(unittest.TestCase):
         self.no(None,'schema')
         self.admin=self.ok(None,'bootstrap',username='new-admin',password='new-admin-pass')['token']
         self.assertEqual(self.ok(self.admin,'rows',table='Product')['total'],2)
+
+    def test_restore_rejects_protected_backup_without_active_manager_without_losing_session(self):
+        backup=self.ok(self.admin,'backup')['file']
+        imported=Path(self.temp.name,'import.sqlite');imported.write_bytes(Path(backup).read_bytes())
+        db=sqlite3.connect(imported);db.execute('UPDATE AppUser SET IsActive=0');db.commit();db.close()
+        self.no(self.admin,'restore')
+        self.assertTrue(self.ok(self.admin,'schema')['user']['manager'])
 
     def test_delegated_user_manager_cannot_escalate_to_manager_or_grant_own_missing_permissions(self):
         _,token=self.employee(overrides={'users.manage':True})

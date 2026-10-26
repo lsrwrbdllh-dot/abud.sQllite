@@ -226,6 +226,9 @@ def restore(path, source, requester=None):
         require(candidate.scalar('SELECT max(Version) FROM SchemaMigration')==1,'إصدار قاعدة غير مدعوم.')
         require(candidate.scalar('SELECT count(*) FROM SystemSetting WHERE SettingID=1 AND MoneyScale=100 AND QuantityScale=1000')==1,'إعداد العملة غير مكتمل.')
         candidate.check()
+        if _signature(candidate)!=original_signature and security.configured(candidate):
+            require(candidate.scalar("SELECT count(DISTINCT u.UserID) FROM AppUser u JOIN UserRole ur USING(UserID) JOIN Role r USING(RoleID) WHERE u.IsActive=1 AND r.RoleName='mobile:manager'"),
+                    'النسخة المحمية لا تحتوي مديراً نشطاً؛ لم تستبدل القاعدة الحالية.')
         target=sqlite3.connect(staged)
         candidate.conn.backup(target)
     finally:

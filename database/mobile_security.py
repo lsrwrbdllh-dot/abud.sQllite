@@ -355,6 +355,7 @@ def user_catalog(db, user):
 def user_save(db, user, request):
     check(user, 'users.manage')
     uid = request.get('id')
+    require(uid is None or (type(uid) is int and uid > 0), 'رقم مستخدم غير صحيح.')
     role = request.get('role')
     require(role in ROLES, 'اختر دوراً صحيحاً.')
     # Only a manager may create another manager, or edit a manager account.
