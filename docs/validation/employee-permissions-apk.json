@@ -1,0 +1,20 @@
+{
+  "version": "1.1.0",
+  "version_code": 2,
+  "source_commit": "6b98c7fb8d28ac89afb082071b9fb0945c57eef8",
+  "workflow_run": 40411838031,
+  "workflow_job": 121884221535,
+  "artifact": 12693284004,
+  "apk_name": "Supermarket-Mobile-SQLite-1.1.0.apk",
+  "apk_bytes": 36828321,
+  "apk_sha256": "c5175e744078d492476d44f73a7d58e09804b50dc3f196b8ddde3b0cbfdcc73d",
+  "zip_sha256": "fe48b28e8cc91d8c99f7a36532f791f4668d3b8686d46853f64c48ec3a9e9f39",
+  "tests_passed": 78,
+  "emulator": "Android 15 API35 x86_64",
+  "tests": "Offline manager setup, category save, balanced journal, login required after restart, persistence, cashier creation/login, restricted navigation",
+  "physical_phone_tested": false,
+  "abis": [
+    "arm64-v8a",
+    "x86_64"
+  ]
+}
